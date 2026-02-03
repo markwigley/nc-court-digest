@@ -73,11 +73,20 @@ async function selectYear(page, year) {
     return;
   }
 
-  // Approach 2: Look for clickable year links/buttons using XPath for text matching
-  const yearLinkXPath = `//a[contains(text(), "${year}")] | //button[contains(text(), "${year}")] | //*[@data-year="${year}"]`;
-  const yearLinks = await page.$x(yearLinkXPath);
-  if (yearLinks.length > 0) {
-    await yearLinks[0].click();
+  // Approach 2: Look for clickable year links/buttons containing the year text
+  const yearClicked = await page.evaluate((yr) => {
+    // Find links or buttons containing the year
+    const elements = [...document.querySelectorAll('a, button, [data-year]')];
+    for (const el of elements) {
+      if (el.textContent.includes(yr) || el.getAttribute('data-year') === yr) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  }, String(year));
+
+  if (yearClicked) {
     await page.waitForNetworkIdle();
     console.log(`Clicked year ${year} link`);
     return;
@@ -89,10 +98,18 @@ async function selectYear(page, year) {
     await dropdownToggle.click();
     await new Promise(resolve => setTimeout(resolve, 500)); // Wait for dropdown to open
 
-    const yearOptionXPath = `//a[contains(text(), "${year}")] | //li[contains(text(), "${year}")] | //*[contains(@class, "dropdown-item") and contains(text(), "${year}")]`;
-    const yearOptions = await page.$x(yearOptionXPath);
-    if (yearOptions.length > 0) {
-      await yearOptions[0].click();
+    const optionClicked = await page.evaluate((yr) => {
+      const elements = [...document.querySelectorAll('a, li, .dropdown-item')];
+      for (const el of elements) {
+        if (el.textContent.includes(yr)) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    }, String(year));
+
+    if (optionClicked) {
       await page.waitForNetworkIdle();
       console.log(`Selected year ${year} from dropdown menu`);
       return;
