@@ -7,8 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "cron": "node src/index.js --run-now",
-    "test-email": "node src/index.js --test-email",
-    "install-browsers": "npx playwright install chromium --with-deps"
+    "test-email": "node src/index.js --test-email"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
@@ -16,7 +15,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.15",
     "pdf-parse": "^1.1.1",
-    "playwright": "^1.48.0"
+    "puppeteer": "^23.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

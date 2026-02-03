@@ -1,9 +1,9 @@
 /**
  * Web scraper for NC Courts opinion filings
- * Uses Playwright to handle JavaScript-rendered content and dropdowns
+ * Uses Puppeteer to handle JavaScript-rendered content and dropdowns
  */
 
-import { chromium } from 'playwright';
+import puppeteer from 'puppeteer';
 import { config } from './config.js';
 import { getReviewedPdfUrls } from './database.js';
 
@@ -12,19 +12,18 @@ import { getReviewedPdfUrls } from './database.js';
  * @returns {Promise<Object[]>} Array of new opinion objects
  */
 export async function fetchNewOpinions() {
-  const browser = await chromium.launch({
-    headless: config.browser.headless,
+  const browser = await puppeteer.launch({
+    headless: config.browser.headless ? 'new' : false,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    const page = await context.newPage();
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     page.setDefaultTimeout(config.browser.timeout);
 
     console.log('Navigating to NC Courts opinion filings page...');
-    await page.goto(config.nccourts.opinionsUrl, { waitUntil: 'networkidle' });
+    await page.goto(config.nccourts.opinionsUrl, { waitUntil: 'networkidle0' });
 
     // Get the current year
     const currentYear = new Date().getFullYear();
@@ -53,14 +52,14 @@ export async function fetchNewOpinions() {
 
 /**
  * Select a year from the dropdown menu
- * @param {Page} page - Playwright page
+ * @param {Page} page - Puppeteer page
  * @param {number} year - Year to select
  */
 async function selectYear(page, year) {
   console.log(`Selecting year ${year} from dropdown...`);
 
   // Wait for the page to be fully loaded
-  await page.waitForLoadState('networkidle');
+  await page.waitForNetworkIdle();
 
   // Look for year dropdown/select element or year links
   // The site may use different patterns - try multiple approaches
@@ -68,17 +67,18 @@ async function selectYear(page, year) {
   // Approach 1: Look for a select dropdown
   const selectDropdown = await page.$('select[name*="year"], select#year, select.year-select');
   if (selectDropdown) {
-    await selectDropdown.selectOption(String(year));
-    await page.waitForLoadState('networkidle');
+    await page.select('select[name*="year"], select#year, select.year-select', String(year));
+    await page.waitForNetworkIdle();
     console.log(`Selected year ${year} from dropdown`);
     return;
   }
 
-  // Approach 2: Look for clickable year links/buttons
-  const yearLink = await page.$(`a:has-text("${year}"), button:has-text("${year}"), [data-year="${year}"]`);
-  if (yearLink) {
-    await yearLink.click();
-    await page.waitForLoadState('networkidle');
+  // Approach 2: Look for clickable year links/buttons using XPath for text matching
+  const yearLinkXPath = `//a[contains(text(), "${year}")] | //button[contains(text(), "${year}")] | //*[@data-year="${year}"]`;
+  const yearLinks = await page.$x(yearLinkXPath);
+  if (yearLinks.length > 0) {
+    await yearLinks[0].click();
+    await page.waitForNetworkIdle();
     console.log(`Clicked year ${year} link`);
     return;
   }
@@ -87,12 +87,13 @@ async function selectYear(page, year) {
   const dropdownToggle = await page.$('.dropdown-toggle, [data-toggle="dropdown"], .year-dropdown');
   if (dropdownToggle) {
     await dropdownToggle.click();
-    await page.waitForTimeout(500); // Wait for dropdown to open
+    await new Promise(resolve => setTimeout(resolve, 500)); // Wait for dropdown to open
 
-    const yearOption = await page.$(`a:has-text("${year}"), li:has-text("${year}"), .dropdown-item:has-text("${year}")`);
-    if (yearOption) {
-      await yearOption.click();
-      await page.waitForLoadState('networkidle');
+    const yearOptionXPath = `//a[contains(text(), "${year}")] | //li[contains(text(), "${year}")] | //*[contains(@class, "dropdown-item") and contains(text(), "${year}")]`;
+    const yearOptions = await page.$x(yearOptionXPath);
+    if (yearOptions.length > 0) {
+      await yearOptions[0].click();
+      await page.waitForNetworkIdle();
       console.log(`Selected year ${year} from dropdown menu`);
       return;
     }
@@ -110,7 +111,7 @@ async function selectYear(page, year) {
 
 /**
  * Scrape opinions from the current page
- * @param {Page} page - Playwright page
+ * @param {Page} page - Puppeteer page
  * @param {number} year - Year being scraped
  * @param {Set<string>} reviewedUrls - Already reviewed URLs
  * @returns {Promise<Object[]>} Array of opinion objects
@@ -121,116 +122,50 @@ async function scrapeOpinionsFromPage(page, year, reviewedUrls) {
   const opinions = [];
 
   // Wait for opinion content to load
-  await page.waitForTimeout(2000);
+  await new Promise(resolve => setTimeout(resolve, 2000));
 
-  // Find all opinion entries - try multiple selectors based on common patterns
-  const opinionElements = await page.$$(`
-    table tr:has(a[href*=".pdf"]),
-    .opinion-row,
-    .opinion-item,
-    div:has(a[href*=".pdf"]),
-    li:has(a[href*=".pdf"])
-  `.replace(/\s+/g, ' '));
+  // Find all PDF links on the page
+  const pdfLinks = await page.$$('a[href*=".pdf"]');
+  console.log(`Found ${pdfLinks.length} PDF links`);
 
-  console.log(`Found ${opinionElements.length} potential opinion elements`);
+  for (const link of pdfLinks) {
+    try {
+      const href = await page.evaluate(el => el.getAttribute('href'), link);
+      const text = await page.evaluate(el => el.textContent, link);
 
-  // If no structured elements found, try to find all PDF links
-  if (opinionElements.length === 0) {
-    const pdfLinks = await page.$$('a[href*=".pdf"]');
-    console.log(`Found ${pdfLinks.length} PDF links directly`);
+      if (!href) continue;
 
-    for (const link of pdfLinks) {
-      try {
-        const href = await link.getAttribute('href');
-        const text = await link.textContent();
+      const fullUrl = href.startsWith('http') ? href : `${config.nccourts.baseUrl}${href}`;
 
-        if (!href) continue;
-
-        const fullUrl = href.startsWith('http') ? href : `${config.nccourts.baseUrl}${href}`;
-
-        if (reviewedUrls.has(fullUrl)) {
-          console.log(`Skipping already reviewed: ${text?.trim() || fullUrl}`);
-          continue;
-        }
-
-        // Extract case info from link text or surrounding context
-        const parent = await link.$('xpath=..');
-        const parentText = parent ? await parent.textContent() : text;
-
-        const opinion = {
-          caseName: text?.trim() || 'Unknown',
-          caseNumber: extractCaseNumber(parentText || text || ''),
-          pdfUrl: fullUrl,
-          filingDate: await extractDateFromContext(page, link),
-          court: detectCourt(fullUrl, parentText || ''),
-          year: year,
-        };
-
-        opinions.push(opinion);
-        console.log(`Found new opinion: ${opinion.caseName}`);
-
-      } catch (err) {
-        console.error('Error processing PDF link:', err.message);
+      if (reviewedUrls.has(fullUrl)) {
+        console.log(`Skipping already reviewed: ${text?.trim() || fullUrl}`);
+        continue;
       }
-    }
-  } else {
-    // Process structured opinion elements
-    for (const element of opinionElements) {
-      try {
-        const opinion = await extractOpinionFromElement(element, year, reviewedUrls);
-        if (opinion) {
-          opinions.push(opinion);
-          console.log(`Found new opinion: ${opinion.caseName}`);
-        }
-      } catch (err) {
-        console.error('Error processing opinion element:', err.message);
-      }
+
+      // Extract case info from link text or surrounding context
+      const parentText = await page.evaluate(el => {
+        const parent = el.parentElement;
+        return parent ? parent.textContent : el.textContent;
+      }, link);
+
+      const opinion = {
+        caseName: text?.trim() || 'Unknown',
+        caseNumber: extractCaseNumber(parentText || text || ''),
+        pdfUrl: fullUrl,
+        filingDate: extractDateFromText(parentText || ''),
+        court: detectCourt(fullUrl, parentText || ''),
+        year: year,
+      };
+
+      opinions.push(opinion);
+      console.log(`Found new opinion: ${opinion.caseName}`);
+
+    } catch (err) {
+      console.error('Error processing PDF link:', err.message);
     }
   }
 
   return opinions;
-}
-
-/**
- * Extract opinion data from a structured element
- * @param {ElementHandle} element - DOM element
- * @param {number} year - Year
- * @param {Set<string>} reviewedUrls - Already reviewed URLs
- * @returns {Promise<Object|null>}
- */
-async function extractOpinionFromElement(element, year, reviewedUrls) {
-  // Find the PDF link
-  const pdfLink = await element.$('a[href*=".pdf"]');
-  if (!pdfLink) return null;
-
-  const href = await pdfLink.getAttribute('href');
-  if (!href) return null;
-
-  const fullUrl = href.startsWith('http') ? href : `${config.nccourts.baseUrl}${href}`;
-
-  if (reviewedUrls.has(fullUrl)) {
-    return null;
-  }
-
-  // Get text content
-  const text = await element.textContent();
-  const linkText = await pdfLink.textContent();
-
-  // Try to extract date
-  const dateMatch = text?.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\w+\s+\d{1,2},?\s+\d{4})/);
-  const filingDate = dateMatch ? dateMatch[0] : null;
-
-  // Try to extract case number
-  const caseNumber = extractCaseNumber(text || '');
-
-  return {
-    caseName: linkText?.trim() || 'Unknown',
-    caseNumber: caseNumber,
-    pdfUrl: fullUrl,
-    filingDate: filingDate,
-    court: detectCourt(fullUrl, text || ''),
-    year: year,
-  };
 }
 
 /**
@@ -275,24 +210,13 @@ function detectCourt(url, text) {
 }
 
 /**
- * Try to extract date from surrounding context
- * @param {Page} page - Playwright page
- * @param {ElementHandle} link - Link element
- * @returns {Promise<string|null>}
+ * Extract date from text
+ * @param {string} text - Text to search
+ * @returns {string|null}
  */
-async function extractDateFromContext(page, link) {
-  try {
-    // Try parent row/container
-    const parent = await link.$('xpath=ancestor::tr | xpath=ancestor::div[contains(@class,"opinion")] | xpath=ancestor::li');
-    if (parent) {
-      const text = await parent.textContent();
-      const dateMatch = text?.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\w+\s+\d{1,2},?\s+\d{4})/);
-      if (dateMatch) return dateMatch[0];
-    }
-  } catch (err) {
-    // Ignore errors in date extraction
-  }
-  return null;
+function extractDateFromText(text) {
+  const dateMatch = text?.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\w+\s+\d{1,2},?\s+\d{4})/);
+  return dateMatch ? dateMatch[0] : null;
 }
 
 /**
@@ -301,17 +225,17 @@ async function extractDateFromContext(page, link) {
  * @returns {Promise<Buffer>}
  */
 export async function downloadPdf(url) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
 
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    const page = await context.newPage();
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Set up download handling
     const response = await page.goto(url, {
-      waitUntil: 'networkidle',
+      waitUntil: 'networkidle0',
       timeout: config.browser.timeout,
     });
 
@@ -319,7 +243,7 @@ export async function downloadPdf(url) {
       throw new Error('No response received');
     }
 
-    const buffer = await response.body();
+    const buffer = await response.buffer();
     return buffer;
 
   } finally {

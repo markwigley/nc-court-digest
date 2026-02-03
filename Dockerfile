@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+FROM ghcr.io/puppeteer/puppeteer:23.0.0
 
 WORKDIR /app
 
@@ -14,8 +14,10 @@ COPY . .
 # Create data directory for SQLite
 RUN mkdir -p /app/data
 
-# Set environment variable for database path
+# Set environment variables
 ENV DB_PATH=/app/data/opinions.db
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 # Run the cron job
 CMD ["npm", "run", "cron"]
