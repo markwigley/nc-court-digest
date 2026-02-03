@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node src/index.js --run-now",
-    "test": "node src/index.js --test-email",
-    "install-browsers": "npx playwright install chromium"
+    "cron": "node src/index.js --run-now",
+    "test-email": "node src/index.js --test-email",
+    "install-browsers": "npx playwright install chromium --with-deps"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
