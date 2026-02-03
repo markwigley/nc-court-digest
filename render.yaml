@@ -1,0 +1,17 @@
+services:
+  - type: cron
+    name: nc-court-digest
+    runtime: docker
+    schedule: "0 22 * * 5"  # Every Friday at 5 PM EST (10 PM UTC)
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
