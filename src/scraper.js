@@ -12,18 +12,39 @@ import { getReviewedPdfUrls } from './database.js';
  * @returns {Promise<Object[]>} Array of new opinion objects
  */
 export async function fetchNewOpinions() {
+  console.log('Launching browser...');
   const browser = await puppeteer.launch({
-    headless: config.browser.headless ? 'new' : false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-extensions',
+    ],
   });
 
   try {
     const page = await browser.newPage();
+
+    // Block images and stylesheets to speed up loading
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    page.setDefaultTimeout(config.browser.timeout);
+    page.setDefaultTimeout(30000); // 30 second timeout
 
     console.log('Navigating to NC Courts opinion filings page...');
-    await page.goto(config.nccourts.opinionsUrl, { waitUntil: 'networkidle0' });
+    await page.goto(config.nccourts.opinionsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Get the current year
     const currentYear = new Date().getFullYear();
