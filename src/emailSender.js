@@ -174,10 +174,10 @@ export async function sendWeeklyDigest(opinions, digestDate) {
     day: 'numeric',
   });
 
-  const subject = `NC Appellate Court Weekly Digest - ${dateStr}`;
+  const subject = `NC Supreme Court Digest - ${dateStr}`;
 
   // Build markdown content
-  let markdown = `# NC Appellate Court Weekly Digest\n`;
+  let markdown = `# NC Supreme Court Digest\n`;
   markdown += `${dateStr} — ${opinions.length} new opinion(s) this week.\n\n`;
 
   for (const opinion of opinions) {
@@ -189,7 +189,7 @@ export async function sendWeeklyDigest(opinions, digestDate) {
   }
 
   // Build plain text version
-  let plainText = `NC APPELLATE COURT WEEKLY DIGEST\n`;
+  let plainText = `NC SUPREME COURT DIGEST\n`;
   plainText += `${dateStr} — ${opinions.length} new opinion(s) this week.\n`;
   plainText += '='.repeat(60) + '\n\n';
 
