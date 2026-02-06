@@ -33,7 +33,7 @@ export async function generateSummary(opinionInfo) {
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
+    max_tokens: 1500,
     messages: [
       {
         role: 'user',
@@ -63,10 +63,12 @@ IMPORTANT FORMATTING REQUIREMENTS:
 1. Start with the case name in bold: **Case Name**
 2. Follow with a date parenthetical using the opinion date from the first page: (Mon. DD, YYYY)
 3. Include case type/subject in parentheses: (Civil – Employment) or (Criminal – Sentencing)
-4. Include judge names in parentheses with the author in CAPS, others in regular case, and note any dissents
+4. Include judge names in parentheses with the author in CAPS, others in regular case, and note any dissents or concurrences
 5. Write 2-4 sentences summarizing: the key issue, the court's holding, and the reasoning
-6. Keep the tone professional and informative
-7. Use legal terminology appropriately
+6. IMPORTANT: If there is a dissent, add 1-3 sentences summarizing the dissent's main argument
+7. IMPORTANT: If there is a concurrence, add 1-3 sentences summarizing the concurrence's main argument
+8. Keep the tone professional and informative
+9. Use legal terminology appropriately
 
 EXAMPLE SUMMARIES:
 
@@ -74,7 +76,9 @@ EXAMPLE SUMMARIES:
 
 **Figueroa v. Butterball, LLC** (Jan. 14, 2026) (Civil – Employment) (BENJAMIN, Richardson, Rushing): A turkey loader challenged his employer's wage practices under the Fair Labor Standards Act and the North Carolina Wage and Hour Act. The Fourth Circuit affirmed summary judgment for Butterball, finding no genuine dispute in the record that Figueroa was a piece-rate employee (not hourly) based on his signed offer letter stating he'd be paid "a load rate of $10.80." The Court then went on to hold that Butterball had properly calculated overtime under FLSA regulations for piece-rate workers and rejected Figueroa's claims that hours were improperly shifted between workweeks.
 
-**United States v. Celedon** (Jan. 31, 2026) (Criminal – Sentencing) (GREGORY, Diaz, Keenan, Diaz dissenting): Francisco Celedon challenged his 36-month supervised release revocation sentence as plainly unreasonable, arguing the district court failed to adequately explain why it imposed the statutory maximum despite his claims of cartel coercion. The Fourth Circuit agreed and vacated, holding that when a court imposes an upward departure from the advisory guidelines range (here, doubling from 12-18 months to 36 months), it must provide a "more significant justification" and meaningfully address the defendant's nonfrivolous mitigation arguments—which the district court failed to do when it didn't engage with Celedon's duress claims.
+**United States v. Celedon** (Jan. 31, 2026) (Criminal – Sentencing) (GREGORY, Diaz, Keenan, Diaz dissenting): Francisco Celedon challenged his 36-month supervised release revocation sentence as plainly unreasonable, arguing the district court failed to adequately explain why it imposed the statutory maximum despite his claims of cartel coercion. The Fourth Circuit agreed and vacated, holding that when a court imposes an upward departure from the advisory guidelines range (here, doubling from 12-18 months to 36 months), it must provide a "more significant justification" and meaningfully address the defendant's nonfrivolous mitigation arguments—which the district court failed to do when it didn't engage with Celedon's duress claims. Chief Judge Diaz dissented, arguing the district court adequately acknowledged Celedon's arguments would normally be "very, very compelling" but then explained why the large quantity of drugs and repeat offense warranted the maximum sentence, making any error harmless.
+
+**Smith v. State** (Feb. 1, 2026) (Criminal – Fourth Amendment) (HARRIS, Wilkinson concurring, Rushing dissenting): The Court held that police officers violated the Fourth Amendment when they conducted a warrantless search of Smith's vehicle based solely on the odor of marijuana, given the state's recent decriminalization of small amounts. Judge Wilkinson concurred, emphasizing that while he agreed with the result, he wrote separately to note that this holding should be narrowly construed and not extend to cases involving other indicia of criminal activity. Judge Rushing dissented, arguing that the odor of marijuana still provides probable cause under existing precedent and that the majority's rule creates unworkable line-drawing problems for law enforcement.
 
 NOW GENERATE A SUMMARY FOR THIS OPINION:
 
@@ -82,14 +86,14 @@ Case Name: ${opinionInfo.caseName || 'Unknown'}
 Opinion Date (from first page): ${opinionInfo.opinionDate || 'Unknown'}
 Case Type: ${opinionInfo.caseType || 'Unknown'}
 Judges: ${formatJudges(opinionInfo.judges)}
-Court: NC Court of Appeals / NC Supreme Court
+Court: NC Supreme Court
 
 OPINION TEXT (first several pages):
 ${opinionInfo.firstPageContent}
 
 ---
 
-Generate only the summary paragraph, nothing else. Start with **${opinionInfo.caseName || 'Case Name'}**`;
+Generate only the summary paragraph, nothing else. Start with **${opinionInfo.caseName || 'Case Name'}**. Remember to include 1-3 sentence summaries of any concurrences or dissents if they exist in the opinion.`;
 }
 
 /**
