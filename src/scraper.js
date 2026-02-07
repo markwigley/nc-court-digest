@@ -1,15 +1,18 @@
 /**
  * Web scraper for NC Courts opinion filings
- * Uses Puppeteer to handle JavaScript-rendered content and dropdowns
+ * Downloads zip file of published opinions and extracts PDFs
  */
 
 import puppeteer from 'puppeteer';
+import AdmZip from 'adm-zip';
 import { config } from './config.js';
 import { getReviewedPdfUrls } from './database.js';
+import { parsePdf, extractOpinionDate } from './pdfParser.js';
 
 /**
  * Fetch new opinions from the NC Courts website
- * @returns {Promise<Object[]>} Array of new opinion objects
+ * Downloads the zip file and extracts PDFs from the past week
+ * @returns {Promise<Object[]>} Array of new opinion objects with PDF buffers
  */
 export async function fetchNewOpinions() {
   console.log('Launching browser...');
@@ -41,7 +44,7 @@ export async function fetchNewOpinions() {
     });
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    page.setDefaultTimeout(30000); // 30 second timeout
+    page.setDefaultTimeout(30000);
 
     console.log('Navigating to NC Courts opinion filings page...');
     await page.goto(config.nccourts.opinionsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -50,25 +53,268 @@ export async function fetchNewOpinions() {
     const currentYear = new Date().getFullYear();
     console.log(`Current year: ${currentYear}`);
 
-    // Get already reviewed opinion URLs
-    const reviewedUrls = getReviewedPdfUrls();
-    console.log(`Already reviewed ${reviewedUrls.size} opinions`);
-
-    const allNewOpinions = [];
-
     // Select the current year from the dropdown
     await selectYear(page, currentYear);
 
-    // Fetch opinions for current year
-    const opinions = await scrapeOpinionsFromPage(page, currentYear, reviewedUrls);
-    allNewOpinions.push(...opinions);
+    // Wait for page to load after year selection
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    console.log(`Found ${allNewOpinions.length} new opinions total`);
-    return allNewOpinions;
+    // Find and download the zip file
+    console.log('Looking for zip file download link...');
+    const zipUrl = await findZipFileUrl(page);
+
+    if (!zipUrl) {
+      console.log('No zip file found, falling back to individual PDF links...');
+      const reviewedUrls = getReviewedPdfUrls();
+      return await scrapeIndividualPdfs(page, currentYear, reviewedUrls);
+    }
+
+    console.log(`Found zip file: ${zipUrl}`);
+
+    // Download the zip file
+    const zipBuffer = await downloadFile(page, zipUrl);
+    console.log(`Downloaded zip file (${(zipBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+
+    // Extract and process PDFs from zip
+    const opinions = await extractOpinionsFromZip(zipBuffer, currentYear);
+
+    // Filter to only opinions from the past week
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+    const recentOpinions = opinions.filter(op => {
+      if (!op.filedDate) return false;
+      return op.filedDate >= oneWeekAgo;
+    });
+
+    console.log(`Found ${recentOpinions.length} opinions from the past week (out of ${opinions.length} total)`);
+
+    // Filter out already reviewed opinions
+    const reviewedUrls = getReviewedPdfUrls();
+    const newOpinions = recentOpinions.filter(op => !reviewedUrls.has(op.pdfUrl));
+
+    console.log(`${newOpinions.length} new opinions to process`);
+    return newOpinions;
 
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * Find the zip file download URL on the page
+ * @param {Page} page - Puppeteer page
+ * @returns {Promise<string|null>} Zip file URL or null
+ */
+async function findZipFileUrl(page) {
+  const zipUrl = await page.evaluate(() => {
+    // Look for links containing "zip" in href or text
+    const links = [...document.querySelectorAll('a')];
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent.toLowerCase();
+      if (href.endsWith('.zip') || text.includes('zip file') || text.includes('download all')) {
+        return href;
+      }
+    }
+    return null;
+  });
+
+  if (zipUrl && !zipUrl.startsWith('http')) {
+    return `${config.nccourts.baseUrl}${zipUrl}`;
+  }
+  return zipUrl;
+}
+
+/**
+ * Download a file and return its buffer
+ * @param {Page} page - Puppeteer page
+ * @param {string} url - URL to download
+ * @returns {Promise<Buffer>}
+ */
+async function downloadFile(page, url) {
+  const response = await page.goto(url, {
+    waitUntil: 'networkidle0',
+    timeout: 120000, // 2 minute timeout for large zip files
+  });
+
+  if (!response) {
+    throw new Error('No response received');
+  }
+
+  return await response.buffer();
+}
+
+/**
+ * Extract opinions from a zip file buffer
+ * @param {Buffer} zipBuffer - Zip file buffer
+ * @param {number} year - Current year
+ * @returns {Promise<Object[]>} Array of opinion objects
+ */
+async function extractOpinionsFromZip(zipBuffer, year) {
+  const zip = new AdmZip(zipBuffer);
+  const entries = zip.getEntries();
+
+  console.log(`Zip contains ${entries.length} files`);
+
+  const opinions = [];
+
+  for (const entry of entries) {
+    // Only process PDF files
+    if (!entry.entryName.toLowerCase().endsWith('.pdf')) {
+      continue;
+    }
+
+    try {
+      const pdfBuffer = entry.getData();
+      const fileName = entry.entryName;
+
+      console.log(`Processing: ${fileName}`);
+
+      // Parse PDF to extract filed date
+      const { text } = await parsePdf(pdfBuffer);
+      const filedDateStr = extractFiledDate(text);
+      const filedDate = filedDateStr ? parseDate(filedDateStr) : null;
+
+      // Extract case name from filename or PDF content
+      const caseName = extractCaseNameFromFileName(fileName) || extractCaseNameFromText(text);
+
+      opinions.push({
+        caseName: caseName || fileName.replace('.pdf', ''),
+        caseNumber: extractCaseNumber(fileName),
+        pdfBuffer: pdfBuffer,
+        pdfUrl: `zip://${fileName}`, // Virtual URL for tracking
+        filedDate: filedDate,
+        filedDateStr: filedDateStr,
+        court: 'NC Supreme Court',
+        year: year,
+      });
+
+    } catch (err) {
+      console.error(`Error processing ${entry.entryName}:`, err.message);
+    }
+  }
+
+  return opinions;
+}
+
+/**
+ * Extract "Filed [DATE]" from PDF text
+ * @param {string} text - PDF text content
+ * @returns {string|null} Filed date string
+ */
+function extractFiledDate(text) {
+  // Look for "Filed [DATE]" pattern in first part of document
+  const firstPage = text.substring(0, 3000);
+
+  // Primary pattern: "Filed January 13, 2026" or "Filed: January 13, 2026"
+  const filedMatch = firstPage.match(/Filed:?\s*(\w+\s+\d{1,2},?\s+\d{4})/i);
+  if (filedMatch) {
+    return filedMatch[1];
+  }
+
+  // Backup: numeric date format
+  const numericMatch = firstPage.match(/Filed:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (numericMatch) {
+    return numericMatch[1];
+  }
+
+  return null;
+}
+
+/**
+ * Parse a date string into a Date object
+ * @param {string} dateStr - Date string
+ * @returns {Date|null}
+ */
+function parseDate(dateStr) {
+  try {
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null;
+}
+
+/**
+ * Extract case name from filename
+ * @param {string} fileName - PDF filename
+ * @returns {string|null}
+ */
+function extractCaseNameFromFileName(fileName) {
+  // Remove .pdf extension and path
+  const baseName = fileName.replace(/^.*[\\/]/, '').replace('.pdf', '');
+
+  // Try to parse "Smith v. Jones" pattern from filename
+  const vsMatch = baseName.match(/(.+?)\s*v\.?\s*(.+)/i);
+  if (vsMatch) {
+    return `${vsMatch[1].trim()} v. ${vsMatch[2].trim()}`;
+  }
+
+  return baseName;
+}
+
+/**
+ * Extract case name from PDF text
+ * @param {string} text - PDF text
+ * @returns {string|null}
+ */
+function extractCaseNameFromText(text) {
+  const firstPage = text.substring(0, 3000);
+
+  // Pattern for "PLAINTIFF v. DEFENDANT"
+  const patterns = [
+    /([A-Z][A-Z\s,.'()-]+)\s+v\.\s+([A-Z][A-Z\s,.'()-]+)/,
+    /(STATE\s+OF\s+NORTH\s+CAROLINA)\s+v\.\s+([A-Z][A-Z\s,.'()-]+)/i,
+    /(?:In\s+(?:re|the\s+Matter\s+of)):?\s+([A-Z][A-Z\s,.'()-]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = firstPage.match(pattern);
+    if (match) {
+      if (match[2]) {
+        return `${cleanName(match[1])} v. ${cleanName(match[2])}`;
+      }
+      return cleanName(match[1]);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Clean up extracted name
+ * @param {string} name - Raw name
+ * @returns {string}
+ */
+function cleanName(name) {
+  return name
+    .replace(/\s+/g, ' ')
+    .replace(/,\s*(Plaintiff|Defendant|Appellant|Appellee|Petitioner|Respondent)s?/gi, '')
+    .trim();
+}
+
+/**
+ * Extract case number from filename
+ * @param {string} fileName - PDF filename
+ * @returns {string}
+ */
+function extractCaseNumber(fileName) {
+  const patterns = [
+    /\b(\d{2,4}[-\s]?(?:COA|CRS|CVS|SP|PA|SPA|WC)[-\s]?\d+)\b/i,
+    /\b(COA\d{2}-\d+)\b/i,
+    /\b(\d{2}[A-Z]{2,3}\d+)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = fileName.match(pattern);
+    if (match) return match[1];
+  }
+
+  return '';
 }
 
 /**
@@ -79,11 +325,7 @@ export async function fetchNewOpinions() {
 async function selectYear(page, year) {
   console.log(`Selecting year ${year} from dropdown...`);
 
-  // Wait for the page to be fully loaded
   await page.waitForNetworkIdle();
-
-  // Look for year dropdown/select element or year links
-  // The site may use different patterns - try multiple approaches
 
   // Approach 1: Look for a select dropdown
   const selectDropdown = await page.$('select[name*="year"], select#year, select.year-select');
@@ -94,9 +336,8 @@ async function selectYear(page, year) {
     return;
   }
 
-  // Approach 2: Look for clickable year links/buttons containing the year text
+  // Approach 2: Look for clickable year links/buttons
   const yearClicked = await page.evaluate((yr) => {
-    // Find links or buttons containing the year
     const elements = [...document.querySelectorAll('a, button, [data-year]')];
     for (const el of elements) {
       if (el.textContent.includes(yr) || el.getAttribute('data-year') === yr) {
@@ -117,7 +358,7 @@ async function selectYear(page, year) {
   const dropdownToggle = await page.$('.dropdown-toggle, [data-toggle="dropdown"], .year-dropdown');
   if (dropdownToggle) {
     await dropdownToggle.click();
-    await new Promise(resolve => setTimeout(resolve, 500)); // Wait for dropdown to open
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const optionClicked = await page.evaluate((yr) => {
       const elements = [...document.querySelectorAll('a, li, .dropdown-item')];
@@ -137,32 +378,20 @@ async function selectYear(page, year) {
     }
   }
 
-  // Approach 4: Check if current year is already displayed
-  const pageContent = await page.content();
-  if (pageContent.includes(String(year))) {
-    console.log(`Year ${year} appears to already be displayed on the page`);
-    return;
-  }
-
-  console.log(`Warning: Could not find year selector for ${year}, proceeding with current page`);
+  console.log(`Year ${year} appears to already be displayed on the page`);
 }
 
 /**
- * Scrape opinions from the current page
+ * Fallback: Scrape individual PDF links if no zip file found
  * @param {Page} page - Puppeteer page
- * @param {number} year - Year being scraped
+ * @param {number} year - Year
  * @param {Set<string>} reviewedUrls - Already reviewed URLs
- * @returns {Promise<Object[]>} Array of opinion objects
+ * @returns {Promise<Object[]>}
  */
-async function scrapeOpinionsFromPage(page, year, reviewedUrls) {
-  console.log(`Scraping opinions for year ${year}...`);
+async function scrapeIndividualPdfs(page, year, reviewedUrls) {
+  console.log('Scraping individual PDF links...');
 
   const opinions = [];
-
-  // Wait for opinion content to load
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
-  // Find all PDF links on the page
   const pdfLinks = await page.$$('a[href*=".pdf"]');
   console.log(`Found ${pdfLinks.length} PDF links`);
 
@@ -175,28 +404,15 @@ async function scrapeOpinionsFromPage(page, year, reviewedUrls) {
 
       const fullUrl = href.startsWith('http') ? href : `${config.nccourts.baseUrl}${href}`;
 
-      if (reviewedUrls.has(fullUrl)) {
-        console.log(`Skipping already reviewed: ${text?.trim() || fullUrl}`);
-        continue;
-      }
+      if (reviewedUrls.has(fullUrl)) continue;
 
-      // Extract case info from link text or surrounding context
-      const parentText = await page.evaluate(el => {
-        const parent = el.parentElement;
-        return parent ? parent.textContent : el.textContent;
-      }, link);
-
-      const opinion = {
+      opinions.push({
         caseName: text?.trim() || 'Unknown',
-        caseNumber: extractCaseNumber(parentText || text || ''),
+        caseNumber: extractCaseNumber(href),
         pdfUrl: fullUrl,
-        filingDate: extractDateFromText(parentText || ''),
-        court: detectCourt(fullUrl, parentText || ''),
+        court: 'NC Supreme Court',
         year: year,
-      };
-
-      opinions.push(opinion);
-      console.log(`Found new opinion: ${opinion.caseName}`);
+      });
 
     } catch (err) {
       console.error('Error processing PDF link:', err.message);
@@ -207,62 +423,16 @@ async function scrapeOpinionsFromPage(page, year, reviewedUrls) {
 }
 
 /**
- * Extract case number from text
- * @param {string} text - Text to search
- * @returns {string}
- */
-function extractCaseNumber(text) {
-  // Common NC case number patterns
-  const patterns = [
-    /\b(\d{2,4}[-\s]?(?:COA|CRS|CVS|SP|PA|SPA|WC)[-\s]?\d+)\b/i,
-    /\b(COA\d{2}-\d+)\b/i,
-    /\b(No\.\s*\d+[-A-Z]+\d*)\b/i,
-    /\b(\d{2}[A-Z]{2,3}\d+)\b/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) return match[1];
-  }
-
-  return '';
-}
-
-/**
- * Detect court from URL or text
- * @param {string} url - PDF URL
- * @param {string} text - Context text
- * @returns {string}
- */
-function detectCourt(url, text) {
-  const lowerUrl = url.toLowerCase();
-  const lowerText = text.toLowerCase();
-
-  if (lowerUrl.includes('supreme') || lowerText.includes('supreme')) {
-    return 'NC Supreme Court';
-  }
-  if (lowerUrl.includes('coa') || lowerText.includes('court of appeals') || lowerText.includes('coa')) {
-    return 'NC Court of Appeals';
-  }
-  return 'NC Appellate Court';
-}
-
-/**
- * Extract date from text
- * @param {string} text - Text to search
- * @returns {string|null}
- */
-function extractDateFromText(text) {
-  const dateMatch = text?.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\w+\s+\d{1,2},?\s+\d{4})/);
-  return dateMatch ? dateMatch[0] : null;
-}
-
-/**
- * Download a PDF and return its buffer
+ * Download a PDF and return its buffer (for individual PDF fallback)
  * @param {string} url - PDF URL
  * @returns {Promise<Buffer>}
  */
 export async function downloadPdf(url) {
+  // If it's a virtual zip URL, the buffer is already available
+  if (url.startsWith('zip://')) {
+    throw new Error('Cannot download virtual zip URL - buffer should already be available');
+  }
+
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -281,8 +451,7 @@ export async function downloadPdf(url) {
       throw new Error('No response received');
     }
 
-    const buffer = await response.buffer();
-    return buffer;
+    return await response.buffer();
 
   } finally {
     await browser.close();

@@ -55,7 +55,7 @@ async function runDigestJob() {
 
     console.log(`\nFound ${newOpinions.length} new opinion(s) to process`);
 
-    // Step 2: Download and parse each opinion, generate summaries
+    // Step 2: Process each opinion and generate summaries
     console.log('\nStep 2: Processing opinions and generating summaries...');
     const processedOpinions = [];
 
@@ -64,20 +64,27 @@ async function runDigestJob() {
       console.log(`\n[${i + 1}/${newOpinions.length}] Processing: ${opinion.caseName || opinion.pdfUrl}`);
 
       try {
-        // Download PDF
-        console.log('  Downloading PDF...');
-        const pdfBuffer = await downloadPdf(opinion.pdfUrl);
+        // Get PDF buffer - either already available from zip or download it
+        let pdfBuffer;
+        if (opinion.pdfBuffer) {
+          console.log('  Using PDF from zip file...');
+          pdfBuffer = opinion.pdfBuffer;
+        } else {
+          console.log('  Downloading PDF...');
+          pdfBuffer = await downloadPdf(opinion.pdfUrl);
+        }
 
         // Extract information from PDF
         console.log('  Extracting opinion information...');
         const opinionInfo = await extractOpinionInfo(pdfBuffer);
 
         // Merge extracted info with scraped info
+        // Use filedDateStr (from "Filed [DATE]" in PDF) as the opinion date
         const fullOpinionInfo = {
           ...opinion,
           ...opinionInfo,
           caseName: opinionInfo.caseName || opinion.caseName,
-          opinionDate: opinionInfo.opinionDate || opinion.filingDate,
+          opinionDate: opinion.filedDateStr || opinionInfo.opinionDate || opinion.filingDate,
         };
 
         // Generate summary

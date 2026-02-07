@@ -26,6 +26,7 @@ export async function parsePdf(pdfBuffer) {
 
 /**
  * Extract the opinion date from PDF text (typically on first page)
+ * Prioritizes "Filed [DATE]" pattern as this is the official filing date
  * @param {string} text - Full PDF text
  * @returns {string|null} Opinion date if found
  */
@@ -33,10 +34,20 @@ export function extractOpinionDate(text) {
   // Get first page content (approximately first 3000 characters)
   const firstPage = text.substring(0, 3000);
 
-  // Common date patterns in court opinions
+  // PRIORITY 1: Look for "Filed [DATE]" pattern - this is the official date
+  const filedMatch = firstPage.match(/Filed:?\s*(\w+\s+\d{1,2},?\s+\d{4})/i);
+  if (filedMatch) {
+    return normalizeDate(filedMatch[1]);
+  }
+
+  // PRIORITY 2: Numeric filed date format
+  const filedNumericMatch = firstPage.match(/Filed:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (filedNumericMatch) {
+    return normalizeDate(filedNumericMatch[1]);
+  }
+
+  // Fallback patterns if "Filed" not found
   const patterns = [
-    // "Filed January 13, 2026" or "Filed: January 13, 2026"
-    /Filed:?\s*(\w+\s+\d{1,2},?\s+\d{4})/i,
     // "January 13, 2026" at start of line
     /^(\w+\s+\d{1,2},?\s+\d{4})/m,
     // "01/13/2026" or "1/13/2026"
